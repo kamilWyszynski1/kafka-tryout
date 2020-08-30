@@ -1,5 +1,6 @@
 package producer
 
+// TODO: refactor, separate package
 type Currencies struct {
 	Base  string `json:"base"`
 	Rates Rates  `json:"rates"`
@@ -43,10 +44,10 @@ type Rates struct {
 
 type SingleCurrency struct {
 	Name string
-	rate rate
+	Rate Rate
 }
 
-type rate struct {
+type Rate struct {
 	Base string
 	Rate float64
 	Date string

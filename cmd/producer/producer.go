@@ -79,7 +79,7 @@ func (h *handler) Run() {
 					defer h.wg.Done()
 					for _, d := range div {
 						// marshal currency rate
-						value, err := json.Marshal(d.rate)
+						value, err := json.Marshal(d.Rate)
 						if err != nil {
 							h.log.WithError(err).Error("failed to marshal rate")
 							continue
@@ -151,7 +151,7 @@ func (h handler) divideCurrencies(c *Currencies) [][]SingleCurrency {
 	for i := 0; i < val.NumField(); i++ {
 		divided[i%h.goroutines] = append(divided[i%h.goroutines], SingleCurrency{
 			Name: val.Type().Field(i).Name,
-			rate: rate{
+			Rate: Rate{
 				Base: c.Base,
 				Rate: val.Field(i).Float(),
 				Date: c.Date,

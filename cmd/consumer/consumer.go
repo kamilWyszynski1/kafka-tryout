@@ -2,7 +2,9 @@ package consumer
 
 import (
 	"context"
+	"encoding/json"
 	"kafka-tryout/cmd/kafka_server"
+	"kafka-tryout/cmd/producer"
 	"sync"
 	"time"
 
@@ -29,14 +31,14 @@ func NewConsumer(log logrus.FieldLogger, sleep time.Duration, finish chan struct
 	return &handler{
 		r: kafka.NewReader(kafka.ReaderConfig{
 			Brokers: []string{kafka_server.Address},
-			Topic:   kafka_server.Topic,
+			Topic:   "currencies",
 			// groupID reads from all partitions of given topic
 			GroupID: "consumers-group",
 			//Logger:      log,
 			//ErrorLogger: log,
 			MinBytes:    1,    // 10KB
 			MaxBytes:    10e6, // 10MB
-			StartOffset: -1,
+			StartOffset: kafka.FirstOffset,
 		}),
 		log:        log,
 		sleep:      sleep,
@@ -49,26 +51,31 @@ func NewConsumer(log logrus.FieldLogger, sleep time.Duration, finish chan struct
 func (h *handler) Run() {
 	for i := 0; i < h.goroutines; i++ {
 		h.wg.Add(1)
-		go func() {
+		go func(goroutineIndex int) {
 			for {
 				select {
 				case <-h.finish:
 					h.r.Close()
 					h.wg.Done()
 				case <-time.After(h.sleep):
-					h.log.Info("reading message")
+					h.log.Infof("goroutine: %d reading messages", goroutineIndex)
 					m, err := h.r.ReadMessage(context.Background())
 					if err != nil {
 						h.log.WithError(err).Error("failed to read message")
 					} else {
-						h.incMsgCounter()
-						h.log.Infof("%s %s %s %s", string(m.Key), m.Value, m.Time, m.Headers)
-						//h.log.Infof("message at partition: %d, offset %d: %s = %s\n", m.Partition, m.Offset, string(m.Key), string(m.Value))
-						h.log.Debugf("m count: %d", h.getMsgCounter())
+						curr := producer.SingleCurrency{
+							Name: string(m.Key),
+						}
+						if err := json.Unmarshal(m.Value, &curr.Rate); err != nil {
+							h.log.WithError(err).Error("failed to unmarshal rate")
+							continue
+						}
+						h.log.Debugf("%+v from goroutine: %s", curr, m.Headers[0].Value)
+						// handle message(currency) here
 					}
 				}
 			}
-		}()
+		}(i)
 	}
 }
 
