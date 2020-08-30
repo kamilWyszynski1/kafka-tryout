@@ -3,14 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/segmentio/kafka-go"
-	"github.com/sirupsen/logrus"
-	"kafka-tryout/cmd/handler"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"kafka-tryout/cmd/consumer"
+
+	"github.com/segmentio/kafka-go"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -26,11 +28,11 @@ func main() {
 
 	SetupCloseHandler(finish)
 
-	if err := handler.CreateTopic(log); err != nil {
-		log.WithError(err).Fatal("")
-	}
-	//handler.RunConsumer(log, 3*time.Second, finish, &wg)
-	//handler.RunProducer(log, 3*time.Second, finish, &wg)
+	//if err := kafka_server.CreateTopic(log); err != nil {
+	//	log.WithError(err).Fatal("")
+	//}
+	consumer.RunConsumer(log, 3*time.Second, finish, &wg)
+	//producer.RunProducer(log, 3*time.Second, finish, &wg)
 	wg.Wait()
 	log.Info("closing program")
 }
