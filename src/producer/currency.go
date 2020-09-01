@@ -12,20 +12,6 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-// produceFn takes number of goroutines and returns array of messages for each gouroutine
-type (
-	produceFn func(int) (Messages, error)
-	Messages  [][]kafka.Message
-)
-
-func (m Messages) Len() int {
-	l := 0
-	for _, chunk := range m {
-		l += len(chunk)
-	}
-	return l
-}
-
 func ProduceCurrenciesFn(goroutineCount int) (Messages, error) {
 	curr, err := getCurrencies()
 	if err != nil {

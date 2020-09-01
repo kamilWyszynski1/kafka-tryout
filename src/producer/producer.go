@@ -12,6 +12,20 @@ import (
 
 const apiURL = "https://api.ratesapi.io/api/latest"
 
+// produceFn takes number of goroutines and returns array of messages for each gouroutine
+type (
+	produceFn func(int) (Messages, error)
+	Messages  [][]kafka.Message
+)
+
+func (m Messages) Len() int {
+	l := 0
+	for _, chunk := range m {
+		l += len(chunk)
+	}
+	return l
+}
+
 type Producer interface {
 	// Run runs producer, it produces messages constantly
 	Run()
