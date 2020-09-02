@@ -1,23 +1,41 @@
 package spotify_generator
 
 import (
-	"fmt"
+	"context"
 	"sync"
+	"time"
+
+	"github.com/segmentio/kafka-go"
 
 	"github.com/sirupsen/logrus"
 	"github.com/zmb3/spotify"
 )
 
 const (
-	playlistCount = 1
-	trackCount    = 10
+	_playlistCount = 1
+	_trackCount    = 25
 )
+
+type meta struct {
+	playlistInx, trackInx int
+	playlistID, trackName string
+}
 
 // Proposition keeps info of found proposition for user
 type Proposition struct {
+	meta
 	TrackName string
 	Artists   []string
 	Album     string
+}
+
+func (p Proposition) GetMeta() map[string]string {
+	m := make(map[string]string, 4)
+	m["playlistInx"] = string(p.meta.playlistInx)
+	m["trackInx"] = string(p.meta.trackInx)
+	m["playlistID"] = p.meta.playlistID
+	m["trackName"] = p.meta.trackName
+	return m
 }
 
 type options struct {
@@ -25,51 +43,65 @@ type options struct {
 	limit  int
 }
 
+// Client handles querying user's playlists, tracks & albums
 type Client struct {
-	userID   string
-	client   *spotify.Client
+	userID  string
+	country string
+	client  *spotify.Client
+
+	kafkaCli *kafka.Writer
+
 	log      logrus.FieldLogger
 	propChan chan Proposition
 	goRCount int
-	country  string
 	wg       sync.WaitGroup
 
-	currentPlaylist spotify.ID
+	currentPlaylist     spotify.ID
+	tracksOnPlaylistLen int
+	userPlaylistLen     int
+
 	// playlistOptions indicates which playlist should be taken
 	playlistOptions options
 	// trackOptions indicates which playlists from specific playlist should be taken
 	trackOptions options
 }
 
-func NewClient(userID string, client *spotify.Client, goroutinesCount int) *Client {
+func NewClient(log logrus.FieldLogger, w *kafka.Writer, userID string, client *spotify.Client, goroutinesCount int) *Client {
 	return &Client{
-		userID:          userID,
-		client:          client,
-		log:             logrus.New(),
-		goRCount:        goroutinesCount,
-		country:         "PL",
-		propChan:        make(chan Proposition, goroutinesCount),
-		wg:              sync.WaitGroup{},
-		currentPlaylist: "",
+		userID: userID,
+		client: client,
+
+		kafkaCli: w,
+
+		log:      log,
+		goRCount: goroutinesCount,
+		country:  "PL",
+		propChan: make(chan Proposition, goroutinesCount),
+		wg:       sync.WaitGroup{},
+
+		// currentPlaylist and tracksOnPlaylistLen are used to query only a part of tracks
+		currentPlaylist:     "",
+		tracksOnPlaylistLen: 0,
+
 		// take 1 playlist at the time
-		playlistOptions: options{0, playlistCount},
+		playlistOptions: options{0, _playlistCount},
 		// take 10 tracks from playlist at the time
-		trackOptions: options{0, trackCount},
+		trackOptions: options{0, _trackCount},
 	}
 }
 
 func (c *Client) Start() {
 	for i := 0; i < c.goRCount; i++ {
 		c.wg.Add(1)
-		go func(log logrus.FieldLogger) {
-			for {
-				select {
-				case prop := <-c.propChan:
-					log.Infof("%+v", prop)
-
-				}
-			}
-		}(c.log.WithField("goR", i))
+		ctx := context.Background()
+		go func(log logrus.FieldLogger, inx int) {
+			consumer := NewKafkaClient(c.kafkaCli, log, ctx, inx, 10)
+			consumer.Consume(c.propChan)
+		}(c.log.WithField("goR", i), i)
+	}
+	for {
+		c.getPropositions()
+		time.Sleep(time.Minute)
 	}
 }
 
@@ -78,15 +110,15 @@ func (c *Client) Start() {
 //
 // we want method to returns only a few proposition at once
 // so we've created playlist and tracks options
-func (c *Client) GetPropositions() error {
-	log := c.log.WithField("method", "getPropositions")
-	seenAlbums := make(map[spotify.ID]struct{})
+func (c *Client) getPropositions() {
+	log := c.log.WithFields(logrus.Fields{
+		"method": "getPropositions",
+		"userID": c.userID,
+	})
 
-	var playlistID spotify.ID
+	var seenAlbums = make(map[spotify.ID]struct{})
 
-	if c.currentPlaylist != "" {
-		playlistID = c.currentPlaylist
-	} else {
+	if c.currentPlaylist == "" {
 		// get user playlists
 		pp, err := c.client.GetPlaylistsForUserOpt(c.userID, &spotify.Options{
 			Country: &c.country,
@@ -94,25 +126,39 @@ func (c *Client) GetPropositions() error {
 			Offset:  &c.playlistOptions.offset,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to get playlist, %w", err)
+			log.WithError(err).Error("failed to get playlists")
+			return
 		}
 		// we are taking only one playlist at the time so we can do it like that
-		playlistID = pp.Playlists[0].ID
+		// assign playlist values
+		c.currentPlaylist = pp.Playlists[0].ID
+		c.userPlaylistLen = pp.Total
 	}
 
-	ptp, err := c.client.GetPlaylistTracksOpt(playlistID, &spotify.Options{
+	log = log.WithField("playlistID", c.currentPlaylist)
+
+	ptp, err := c.client.GetPlaylistTracksOpt(c.currentPlaylist, &spotify.Options{
 		Country: &c.country,
 		Limit:   &c.trackOptions.limit,
 		Offset:  &c.trackOptions.offset,
 	}, "")
-
 	if err != nil {
-		return fmt.Errorf("failed to get playlist tracks, %w", err)
+		log.WithError(err).Error("failed to get playlist's tracks")
+		return
 	}
-	for _, track := range ptp.Tracks {
+
+	// set total elements of playlist
+	if c.tracksOnPlaylistLen == 0 {
+		c.tracksOnPlaylistLen = ptp.Total
+	}
+
+	log.Infof("currently checking: (playlist: %d, total: %d), track: %d", c.playlistOptions.offset, c.tracksOnPlaylistLen, c.trackOptions.offset)
+
+	for i, track := range ptp.Tracks {
 		album := track.Track.Album
+		log = log.WithFields(logrus.Fields{"trackID": track.Track.ID, "album": album.Name})
 		if _, ok := seenAlbums[album.ID]; ok {
-			log.Infof("%s album already seen", album.Name)
+			log.Infof("album: %s already seen", album.Name)
 			continue
 		}
 		at, err := c.client.GetAlbumTracks(album.ID)
@@ -121,17 +167,46 @@ func (c *Client) GetPropositions() error {
 			continue
 		}
 
+		log.Infof("checkin track nr: %d, has %d similar tracks", i, len(at.Tracks))
 		// write seen album
 		seenAlbums[album.ID] = struct{}{}
 		for _, t := range at.Tracks {
 			c.propChan <- Proposition{
+				meta{
+					playlistInx: c.playlistOptions.offset,
+					trackInx:    c.trackOptions.offset + i,
+					playlistID:  c.currentPlaylist.String(),
+					trackName:   track.Track.Name,
+				},
 				t.Name,
 				trimArtists(t.Artists),
 				album.Name,
 			}
 		}
 	}
-	return nil
+
+	// if we queried all of tracks from playlist go to the next one
+	if c.trackOptions.offset+len(ptp.Tracks) >= c.tracksOnPlaylistLen {
+		// go from the very beginning
+		if c.playlistOptions.offset+1 == c.userPlaylistLen {
+			c.resetPlaylistValues()
+			c.playlistOptions.offset = 0
+			c.trackOptions.offset = 0
+			c.userPlaylistLen = 0
+
+		}
+		// reset all saved values and increase playlist offset
+		c.playlistOptions.offset += 1
+		c.resetPlaylistValues()
+	} else {
+		c.trackOptions.offset += _trackCount
+	}
+}
+
+func (c *Client) resetPlaylistValues() {
+	c.trackOptions.offset = 0
+	c.tracksOnPlaylistLen = 0
+	c.currentPlaylist = ""
 }
 
 func trimArtists(artists []spotify.SimpleArtist) []string {

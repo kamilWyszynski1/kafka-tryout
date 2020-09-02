@@ -9,10 +9,14 @@ package main
 
 import (
 	"fmt"
+	"kafka-tryout/src/kafka_server"
 	"kafka-tryout/src/spotify_generator"
 	"log"
 	"net/http"
 
+	"github.com/segmentio/kafka-go"
+
+	"github.com/sirupsen/logrus"
 	"github.com/zmb3/spotify"
 )
 
@@ -36,7 +40,7 @@ func main() {
 	go http.ListenAndServe(":8080", nil)
 
 	url := auth.AuthURL(state)
-	fmt.Println("Please log in to Spotify by visiting the following page in your browser:", url)
+	fmt.Println("Please logger in to Spotify by visiting the following page in your browser:", url)
 
 	// wait for auth to complete
 	client := <-ch
@@ -47,9 +51,24 @@ func main() {
 		log.Fatal(err)
 	}
 
-	cli := spotify_generator.NewClient(user.ID, client, 100)
+	logger := logrus.New()
+	logger.SetLevel(logrus.DebugLevel)
+
+	w := kafka.NewWriter(kafka.WriterConfig{
+		Brokers: []string{kafka_server.Address},
+		// producer writes one message to one partition at the time, e.g. if we have 3 messages and 4 partitions
+		// it would be the output:
+		// INFO[0004] writing 1 messages to topic (partition: 0)
+		// INFO[0004] writing 1 messages to topic (partition: 2)
+		// INFO[0004] writing 1 messages to topic (partition: 1)
+		Topic: "spotify",
+		//Logger:      log,
+		//ErrorLogger: log,
+		Balancer: &kafka.LeastBytes{},
+	})
+
+	cli := spotify_generator.NewClient(logger, w, user.ID, client, 100)
 	cli.Start()
-	fmt.Println(cli.GetPropositions())
 }
 
 func completeAuth(w http.ResponseWriter, r *http.Request) {
