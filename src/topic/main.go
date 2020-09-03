@@ -26,7 +26,7 @@ func CreateTopic(log logrus.FieldLogger) error {
 		Addr: kafka.TCP(kafka_server.Address),
 		Topics: []kafka.TopicConfig{
 			{
-				Topic:         "spotify",
+				Topic:         "currently-playing",
 				NumPartitions: 10,
 				//  replication factor: x larger than available brokers: 1
 				ReplicationFactor:  1,

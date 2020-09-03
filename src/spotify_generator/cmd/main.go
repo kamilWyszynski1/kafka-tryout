@@ -8,13 +8,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"kafka-tryout/src/kafka_server"
-	"kafka-tryout/src/spotify_generator"
+	consumer2 "kafka-tryout/src/spotify_generator/consumer"
+	"kafka-tryout/src/spotify_generator/generator"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/segmentio/kafka-go"
@@ -29,7 +32,7 @@ import (
 const redirectURI = "http://localhost:8080/callback"
 
 var (
-	auth  = spotify.NewAuthenticator(redirectURI, spotify.ScopeUserReadPrivate)
+	auth  = spotify.NewAuthenticator(redirectURI, spotify.ScopeUserReadPrivate, spotify.ScopeUserReadRecentlyPlayed)
 	ch    = make(chan *spotify.Client)
 	state = "abc123"
 )
@@ -57,7 +60,7 @@ func main() {
 	logger := logrus.New()
 	logger.SetLevel(logrus.DebugLevel)
 
-	w := kafka.NewWriter(kafka.WriterConfig{
+	spotifyW := kafka.NewWriter(kafka.WriterConfig{
 		Brokers: []string{kafka_server.Address},
 		// producer writes one message to one partition at the time, e.g. if we have 3 messages and 4 partitions
 		// it would be the output:
@@ -65,6 +68,19 @@ func main() {
 		// INFO[0004] writing 1 messages to topic (partition: 2)
 		// INFO[0004] writing 1 messages to topic (partition: 1)
 		Topic: "spotify",
+		//Logger:      log,
+		//ErrorLogger: log,
+		Balancer: &kafka.LeastBytes{},
+	})
+
+	currW := kafka.NewWriter(kafka.WriterConfig{
+		Brokers: []string{kafka_server.Address},
+		// producer writes one message to one partition at the time, e.g. if we have 3 messages and 4 partitions
+		// it would be the output:
+		// INFO[0004] writing 1 messages to topic (partition: 0)
+		// INFO[0004] writing 1 messages to topic (partition: 2)
+		// INFO[0004] writing 1 messages to topic (partition: 1)
+		Topic: "currently-playing",
 		//Logger:      log,
 		//ErrorLogger: log,
 		Balancer: &kafka.LeastBytes{},
@@ -78,8 +94,22 @@ func main() {
 		close(finish)
 	}()
 
-	cli := spotify_generator.NewClient(logger, w, user.ID, client, 5, finish)
-	cli.Start()
+	var (
+		goroutinesCount = 5
+		messageChan     = make(chan interface{}, goroutinesCount)
+	)
+
+	cli := generator.NewClient(logger, client, user.ID, 5, finish)
+	cli.StartGettingPropositions(messageChan)
+	cli.StartGettingCurrentlyPlaying(messageChan)
+
+	ctx := context.Background()
+	wg := sync.WaitGroup{}
+	for i := 0; i < 2*goroutinesCount; i++ {
+		consumer := consumer2.NewKafkaClient(spotifyW, currW, logger.WithField("goR", i), ctx, i, 5, finish, &wg)
+		consumer.Consume(messageChan)
+	}
+	wg.Wait()
 	logger.Info("spotify generator finished")
 }
 
