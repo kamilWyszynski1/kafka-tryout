@@ -13,6 +13,9 @@ import (
 	"kafka-tryout/src/spotify_generator"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/segmentio/kafka-go"
 
@@ -67,8 +70,17 @@ func main() {
 		Balancer: &kafka.LeastBytes{},
 	})
 
-	cli := spotify_generator.NewClient(logger, w, user.ID, client, 100)
+	finish := make(chan struct{})
+	signalChannel := make(chan os.Signal, 2)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-signalChannel
+		close(finish)
+	}()
+
+	cli := spotify_generator.NewClient(logger, w, user.ID, client, 5, finish)
 	cli.Start()
+	logger.Info("spotify generator finished")
 }
 
 func completeAuth(w http.ResponseWriter, r *http.Request) {

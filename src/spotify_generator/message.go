@@ -5,9 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/sirupsen/logrus"
-
 	"github.com/segmentio/kafka-go"
+	"github.com/sirupsen/logrus"
 )
 
 const _chunkSize = 20
@@ -24,16 +23,19 @@ type kafkaClient struct {
 
 	index int
 
+	finish chan struct{}
+
 	chunk     []kafka.Message
 	chunkSize int
 }
 
-func NewKafkaClient(cli *kafka.Writer, log logrus.FieldLogger, ctx context.Context, index, chunkSize int) *kafkaClient {
+func NewKafkaClient(cli *kafka.Writer, log logrus.FieldLogger, ctx context.Context, index, chunkSize int, finish chan struct{}) *kafkaClient {
 	return &kafkaClient{
 		cli:       cli,
 		log:       log,
 		ctx:       ctx,
 		index:     index,
+		finish:    finish,
 		chunkSize: chunkSize,
 		chunk:     make([]kafka.Message, chunkSize),
 	}
@@ -41,8 +43,11 @@ func NewKafkaClient(cli *kafka.Writer, log logrus.FieldLogger, ctx context.Conte
 
 func (k *kafkaClient) Consume(propChan chan Proposition) {
 	counter := 0
+	k.log.Info("start consuming data")
 	for {
 		select {
+		case <-k.finish:
+			return
 		case p := <-propChan:
 			m := kafka.Message{
 				Key:   []byte(p.TrackName),
@@ -85,5 +90,7 @@ func (k kafkaClient) send(messages []kafka.Message) {
 			"method": "send",
 			"len":    len(messages),
 		}).WithError(err).Error("failed to write messages to kafka")
+	} else {
+		k.log.Infof("succesfully writen messages: %d", len(messages))
 	}
 }

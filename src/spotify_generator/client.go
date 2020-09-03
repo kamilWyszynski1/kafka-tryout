@@ -2,6 +2,7 @@ package spotify_generator
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
@@ -31,8 +32,8 @@ type Proposition struct {
 
 func (p Proposition) GetMeta() map[string]string {
 	m := make(map[string]string, 4)
-	m["playlistInx"] = string(p.meta.playlistInx)
-	m["trackInx"] = string(p.meta.trackInx)
+	m["playlistInx"] = strconv.Itoa(p.meta.playlistInx)
+	m["trackInx"] = strconv.Itoa(p.meta.trackInx)
 	m["playlistID"] = p.meta.playlistID
 	m["trackName"] = p.meta.trackName
 	return m
@@ -64,9 +65,10 @@ type Client struct {
 	playlistOptions options
 	// trackOptions indicates which playlists from specific playlist should be taken
 	trackOptions options
+	finish       chan struct{}
 }
 
-func NewClient(log logrus.FieldLogger, w *kafka.Writer, userID string, client *spotify.Client, goroutinesCount int) *Client {
+func NewClient(log logrus.FieldLogger, w *kafka.Writer, userID string, client *spotify.Client, goroutinesCount int, finish chan struct{}) *Client {
 	return &Client{
 		userID: userID,
 		client: client,
@@ -83,6 +85,8 @@ func NewClient(log logrus.FieldLogger, w *kafka.Writer, userID string, client *s
 		currentPlaylist:     "",
 		tracksOnPlaylistLen: 0,
 
+		finish: finish,
+
 		// take 1 playlist at the time
 		playlistOptions: options{0, _playlistCount},
 		// take 10 tracks from playlist at the time
@@ -92,17 +96,26 @@ func NewClient(log logrus.FieldLogger, w *kafka.Writer, userID string, client *s
 
 func (c *Client) Start() {
 	for i := 0; i < c.goRCount; i++ {
-		c.wg.Add(1)
 		ctx := context.Background()
-		go func(log logrus.FieldLogger, inx int) {
-			consumer := NewKafkaClient(c.kafkaCli, log, ctx, inx, 10)
+		c.wg.Add(1)
+		go func(inx int, wg *sync.WaitGroup) {
+			log := c.log.WithField("goR", inx)
+
+			consumer := NewKafkaClient(c.kafkaCli, c.log.WithField("goR", inx), ctx, inx, 5, c.finish)
 			consumer.Consume(c.propChan)
-		}(c.log.WithField("goR", i), i)
+
+			log.Info("finish work")
+			wg.Done()
+		}(i, &c.wg)
 	}
-	for {
-		c.getPropositions()
-		time.Sleep(time.Minute)
-	}
+	go func() {
+		for {
+			c.getPropositions()
+			time.Sleep(time.Minute)
+		}
+	}()
+	c.wg.Wait()
+	c.log.Info("start method finished")
 }
 
 // getPropositions gets all os user playlists, searches for tracks, then
