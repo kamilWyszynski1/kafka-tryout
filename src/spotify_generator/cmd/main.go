@@ -11,8 +11,8 @@ import (
 	"context"
 	"fmt"
 	"kafka-tryout/src/kafka_server"
-	consumer2 "kafka-tryout/src/spotify_generator/consumer"
 	"kafka-tryout/src/spotify_generator/generator"
+	"kafka-tryout/src/spotify_generator/producer"
 	"log"
 	"net/http"
 	"os"
@@ -95,19 +95,19 @@ func main() {
 	}()
 
 	var (
-		goroutinesCount = 5
+		goroutinesCount = 1
 		messageChan     = make(chan interface{}, goroutinesCount)
 	)
 
-	cli := generator.NewClient(logger, client, user.ID, 5, finish)
-	cli.StartGettingPropositions(messageChan)
+	cli := generator.NewClient(logger, client, user.ID, goroutinesCount, finish)
+	//cli.StartGettingPropositions(messageChan)
 	cli.StartGettingCurrentlyPlaying(messageChan)
 
 	ctx := context.Background()
 	wg := sync.WaitGroup{}
 	for i := 0; i < 2*goroutinesCount; i++ {
-		consumer := consumer2.NewKafkaClient(spotifyW, currW, logger.WithField("goR", i), ctx, i, 5, finish, &wg)
-		consumer.Consume(messageChan)
+		pr := producer.NewKafkaClient(spotifyW, currW, logger.WithField("goR", i), ctx, i, 5, finish, &wg)
+		pr.Consume(messageChan)
 	}
 	wg.Wait()
 	logger.Info("spotify generator finished")
